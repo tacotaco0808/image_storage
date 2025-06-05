@@ -1,0 +1,13 @@
+{
+  "name": "FastAPI + PostgreSQL Dev Container",
+  "dockerComposeFile": "../docker-compose.yml",
+  "service": "fastapi",
+  "workspaceFolder": "/app",
+  "extensions": [
+    "ms-python.python",
+    "ms-azuretools.vscode-docker",
+  ],
+  "forwardPorts": [8000],
+  "postCreateCommand": "pip install -r requirements.txt",
+  "remoteUser": "root"
+}

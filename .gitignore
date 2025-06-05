@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg
+*.egg-info/
+dist/
+build/
+
+# VSCode settings
+.vscode/
+.devcontainer/.python-version
+
+# Docker
+*.log
+*.pid
+.env
+.env.*
+*.db
+*.sqlite3
+
+.mypy_cache/
+
+# OS
+.DS_Store
+Thumbs.db
