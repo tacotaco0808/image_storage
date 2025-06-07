@@ -6,8 +6,9 @@ import uuid
 class Image(Base):
     __tablename__ = "images"
 
-    public_id = Column(UUID(as_uuid=True),primary_key=True,default=uuid.uuid4)
+    public_id = Column(UUID(as_uuid=True),primary_key=True)
     user_id = Column(UUID(as_uuid=True))
+    format = Column(String,nullable=False)
     version = Column(Integer,nullable=False)
     title = Column(String)
     description = Column(String)
