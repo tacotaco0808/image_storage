@@ -1,6 +1,5 @@
 fastapi
 uvicorn[standard]
-psycopg2-binary
-sqlalchemy
+asyncpg
 python-multipart
 cloudinary
