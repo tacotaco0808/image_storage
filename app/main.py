@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+from datetime import timedelta
 from typing import AsyncGenerator, Optional
 import uuid
 from uuid import UUID
@@ -7,11 +8,14 @@ from asyncpg import Connection
 from asyncpg.pool import Pool
 from fastapi import  Depends, FastAPI, File, Form, Query,UploadFile,HTTPException,Request
 import cloudinary,os
+from fastapi.security import OAuth2PasswordRequestForm, OAuth2PasswordBearer
+from auth import auth_user, create_access_token, get_current_user
 from database import DATABASE_URL
 from enums import ImageFormat
-from schemas import CreateImage
+from schemas import CreateImage, Token
 from cloudinary.uploader import upload,destroy
 from dotenv import load_dotenv
+from security import oauth2_scheme
 load_dotenv()
 
 
@@ -41,6 +45,7 @@ async def lifespan(app: FastAPI):
     # 後処理
     await app.state.db_pool.close()
     print("🛑 Disconnected from database")
+
 
 app = FastAPI(lifespan=lifespan)
 
@@ -77,7 +82,7 @@ async def get_images(user_id: Optional[UUID] = Query(None),format: Optional[Imag
     return [dict(row) for row in rows]
 
 @app.post("/db_api/images")
-async def create_image(user_id:uuid.UUID=Form(...),title:str = Form(...),description:str = Form(...),image_file:UploadFile=File(...),conn:Connection=Depends(get_db_conn)):
+async def create_image(user_id:uuid.UUID=Form(...),title:str = Form(...),description:str = Form(...),image_file:UploadFile=File(...),conn:Connection=Depends(get_db_conn),auth_res = Depends(get_current_user)):
     # formリクエストを受けとって、cloudinaryにpubidをハッシュ化した画像をストア
     public_id = uuid.uuid4() # ストアする画像のUUID生成
     upload_contents = await image_file.read()
@@ -104,7 +109,7 @@ async def create_image(user_id:uuid.UUID=Form(...),title:str = Form(...),descrip
         raise HTTPException(status_code=500,detail=f"Database error: {e}")
     
 @app.delete("/db_api/images/{image_id}")
-async def delete_image(image_id:UUID,conn:Connection = Depends(get_db_conn)):
+async def delete_image(image_id:UUID,conn:Connection = Depends(get_db_conn),auth_res = Depends(get_current_user)):
     
     # database 操作
     
@@ -119,3 +124,16 @@ async def delete_image(image_id:UUID,conn:Connection = Depends(get_db_conn)):
     
     return {"detail":"Image deleted successfully"}
 
+@app.post("/db_api/login")
+async def login_for_access_token(form_data:OAuth2PasswordRequestForm = Depends())->Token:
+    # ログイン後トークンの作成
+    user_uuid = UUID(os.getenv("USER_ID"))
+    user = auth_user(user_id=user_uuid,user_name=form_data.username,password=form_data.password)
+    if not user:
+        raise HTTPException(status_code=401,detail="Incorrect username or password",headers={"WWW-Authenticate": "Bearer"})
+    minutes = float(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES") or 30)
+    access_token_expires = timedelta(minutes=minutes)
+    access_token = create_access_token(
+        data={"sub": user.user_name}, expires_delta=access_token_expires
+    )
+    return Token(access_token=access_token,token_type="bearer")

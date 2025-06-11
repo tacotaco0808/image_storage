@@ -3,3 +3,4 @@ uvicorn[standard]
 asyncpg
 python-multipart
 cloudinary
+python-jose[cryptography]
