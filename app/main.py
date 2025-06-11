@@ -1,10 +1,11 @@
 from contextlib import asynccontextmanager
-from typing import Optional
+from typing import AsyncGenerator, Optional
 import uuid
 from uuid import UUID
 import asyncpg
+from asyncpg import Connection
 from asyncpg.pool import Pool
-from fastapi import  FastAPI, File, Form, Query,UploadFile,HTTPException,Request
+from fastapi import  Depends, FastAPI, File, Form, Query,UploadFile,HTTPException,Request
 import cloudinary,os
 from database import DATABASE_URL
 from enums import ImageFormat
@@ -48,11 +49,16 @@ cloudinary.config(
     api_key = str(os.getenv("CLOUDINARY_API_KEY")),
     api_secret = str(os.getenv("CLOUDINARY_API_SECRET"))
 )
+# ジェネレータ関数で共通化 依存性注入でconn取得部分を共通化
+async def get_db_conn(request: Request) -> AsyncGenerator[Connection, None]:
+    db_pool = request.app.state.db_pool
+    async with db_pool.acquire() as conn:
+        yield conn  # 非同期ジェネレータとして返す
+
 
 @app.get("/db_api1/images")
-async def get_images(request:Request,user_id: Optional[UUID] = Query(None),format: Optional[ImageFormat] = Query(None)): # Optionalが型でNone or Value Queryが入力時の話
+async def get_images(user_id: Optional[UUID] = Query(None),format: Optional[ImageFormat] = Query(None),conn:Connection = Depends(get_db_conn)): # Optionalが型でNone or Value Queryが入力時の話
     # クエリパラメータから検索ワードに一致する画像データ取得
-    db_pool:Pool = request.app.state.db_pool
     clauses = []
     values=[]
     if user_id:
@@ -67,77 +73,49 @@ async def get_images(request:Request,user_id: Optional[UUID] = Query(None),forma
     else:
         query = "SELECT * FROM images"
 
-    async with db_pool.acquire() as conn:
-        rows = await conn.fetch(query, *values)
-        return [dict(row) for row in rows]
+    rows = await conn.fetch(query,*values)
+    return [dict(row) for row in rows]
 
 @app.post("/db_api/images")
-async def create_image(request:Request,user_id:uuid.UUID=Form(...),title:str = Form(...),description:str = Form(...),image_file:UploadFile=File(...)):
+async def create_image(user_id:uuid.UUID=Form(...),title:str = Form(...),description:str = Form(...),image_file:UploadFile=File(...),conn:Connection=Depends(get_db_conn)):
     # formリクエストを受けとって、cloudinaryにpubidをハッシュ化した画像をストア
-    public_id = str(uuid.uuid4()) # ストアする画像のUUID生成
+    public_id = uuid.uuid4() # ストアする画像のUUID生成
     upload_contents = await image_file.read()
     try:
         # cloudinary操作
         
-        upload_res = upload(upload_contents,resource_type="auto",public_id=public_id) # I/Oだけど公式sdkが非同期対応していないそのうち自作する
+        upload_res = upload(upload_contents,resource_type="auto",public_id=str(public_id),overwrite=False) # I/Oだけど公式sdkが非同期対応していないそのうち自作する
         version = upload_res["version"]
         image_url =  upload_res["secure_url"]
         format = upload_res["format"]
         # db操作
 
-        db_pool:Pool = request.app.state.db_pool
-        async with db_pool.acquire() as conn:
-            await conn.execute(
-                "INSERT INTO images (public_id, user_id, format, title, description, version) VALUES ($1, $2, $3, $4, $5, $6)",
-                public_id, user_id, format, title, description, version
-            )
+        await conn.execute(
+            "INSERT INTO images (public_id, user_id, format, title, description, version) VALUES ($1, $2, $3, $4, $5, $6)",
+            public_id, user_id, format, title, description, version
+        )
         
         # レスポンス
-        schema:CreateImage = CreateImage(user_id=user_id,title=title,description=description)
+        schema:CreateImage = CreateImage(public_id=public_id,user_id=user_id,title=title,description=description,format=format,version=version)
         return {"image_url":image_url,"image":schema}
     
     except Exception as e:
-        try:
-            destroy(public_id=public_id) # トランザクション中DBでエラーが発生した場合のロールバック
-        except Exception as destroy_err:
-            print(f"Failed to delete image from Cloudinary: {destroy_err}")
-        raise HTTPException(status_code=400,detail=str(e))
+        destroy(public_id=str(public_id)) # トランザクション中DBでエラーが発生した場合のロールバック
+        raise HTTPException(status_code=500,detail=f"Database error: {e}")
     
-# @app.post("/db_api/images")
-# async def create_image(user_id:uuid.UUID=Form(...),title:str = Form(...),description:str = Form(...),image_file:UploadFile=File(...),db = Depends(get_db)):
-#     # formリクエストを受けとって、cloudinaryにpubidをハッシュ化した画像をストア
-#     upload_contents = await image_file.read()
-#     try:
-#         public_id = str(uuid.uuid4()) # ランダムなuuid生成
-#         upload_res = upload(upload_contents,resource_type="auto",public_id=public_id)
-#         version = upload_res["version"]
-#         image_url =  upload_res["secure_url"]
-#         format = upload_res["format"]
-#         schema:CreateImage = CreateImage(user_id=user_id,title=title,description=description)
-#         image = Image(public_id=public_id,user_id=schema.user_id,format=format,title=schema.title,description=schema.description,version=version)
-#         db.add(image)
-#         db.commit()
-#         db.refresh(image)
-#         return {
-#                 "image_url":image_url,
-#                 "image":image
+@app.delete("/db_api/images/{image_id}")
+async def delete_image(image_id:UUID,conn:Connection = Depends(get_db_conn)):
+    
+    # database 操作
+    
+    res = await conn.execute("DELETE FROM images WHERE public_id = $1",image_id)
+    if res == "DELETE 0":
+        raise HTTPException(status_code=404,detail="Image not found in database")
+    
+    # cloudinary操作
+    destroy_res = destroy(str(image_id))
+    if destroy_res.get("result") != "ok":
+        raise HTTPException(status_code=500, detail="Failed to delete image from Cloudinary")
+    
+    return {"detail":"Image deleted successfully"}
 
-#         }
-#     except Exception as e:
-#         raise HTTPException(status_code=400,detail=str(e))
-
-# @app.delete("/db_api/images/{image_id}")
-# async def delete_image(image_id:UUID,db:Session = Depends(get_db)):
-#     # dbから画像取得
-#     image = db.query(Image).filter(Image.public_id == str(image_id)).first()
-#     if not image:
-#         raise HTTPException(status_code=404,detail="Image not found")
-#     # cloudinaryから削除
-#     destroy_res = destroy(str(image_id))
-#     if destroy_res.get("result") != "ok":
-#         raise HTTPException(status_code=500,detail="Failed to delete image from Cloudinary")
-#     # dbから削除
-#     db.delete(image)
-#     db.commit()
-
-#     return {"detail": "Image deleted successfully"}
