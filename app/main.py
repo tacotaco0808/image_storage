@@ -1,3 +1,4 @@
+from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from datetime import timedelta
 from typing import AsyncGenerator, Optional
@@ -48,8 +49,14 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
-
-
+    
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[str(os.getenv("FRONT_IP"))],
+    allow_credentials=True,
+    allow_methods=["*"],  # 全メソッド（GET, POSTなど）許可
+    allow_headers=["*"],  # 全ヘッダー許可)
+)
 cloudinary.config(
     cloud_name = str(os.getenv("CLOUDINARY_CLOUD_NAME")),
     api_key = str(os.getenv("CLOUDINARY_API_KEY")),
