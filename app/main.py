@@ -61,7 +61,7 @@ async def get_db_conn(request: Request) -> AsyncGenerator[Connection, None]:
         yield conn  # 非同期ジェネレータとして返す
 
 
-@app.get("/db_api1/images")
+@app.get("/images")
 async def get_images(user_id: Optional[UUID] = Query(None),format: Optional[ImageFormat] = Query(None),conn:Connection = Depends(get_db_conn)): # Optionalが型でNone or Value Queryが入力時の話
     # クエリパラメータから検索ワードに一致する画像データ取得
     clauses = []
@@ -81,7 +81,7 @@ async def get_images(user_id: Optional[UUID] = Query(None),format: Optional[Imag
     rows = await conn.fetch(query,*values)
     return [dict(row) for row in rows]
 
-@app.post("/db_api/images")
+@app.post("/images")
 async def create_image(user_id:uuid.UUID=Form(...),title:str = Form(...),description:str = Form(...),image_file:UploadFile=File(...),conn:Connection=Depends(get_db_conn),auth_res = Depends(get_current_user)):
     # formリクエストを受けとって、cloudinaryにpubidをハッシュ化した画像をストア
     public_id = uuid.uuid4() # ストアする画像のUUID生成
@@ -108,7 +108,7 @@ async def create_image(user_id:uuid.UUID=Form(...),title:str = Form(...),descrip
         destroy(public_id=str(public_id)) # トランザクション中DBでエラーが発生した場合のロールバック
         raise HTTPException(status_code=500,detail=f"Database error: {e}")
     
-@app.delete("/db_api/images/{image_id}")
+@app.delete("/images/{image_id}")
 async def delete_image(image_id:UUID,conn:Connection = Depends(get_db_conn),auth_res = Depends(get_current_user)):
     
     # database 操作
@@ -124,7 +124,7 @@ async def delete_image(image_id:UUID,conn:Connection = Depends(get_db_conn),auth
     
     return {"detail":"Image deleted successfully"}
 
-@app.post("/db_api/login")
+@app.post("/login")
 async def login_for_access_token(form_data:OAuth2PasswordRequestForm = Depends())->Token:
     # ログイン後トークンの作成
     user_uuid = UUID(os.getenv("USER_ID"))
