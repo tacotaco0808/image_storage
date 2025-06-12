@@ -12,7 +12,7 @@ from fastapi.security import OAuth2PasswordRequestForm, OAuth2PasswordBearer
 from auth import auth_user, create_access_token, get_current_user
 from database import DATABASE_URL
 from enums import ImageFormat
-from schemas import CreateImage, Token
+from schemas import Image, Token
 from cloudinary.uploader import upload,destroy
 from dotenv import load_dotenv
 from security import oauth2_scheme
@@ -49,6 +49,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
+
 cloudinary.config(
     cloud_name = str(os.getenv("CLOUDINARY_CLOUD_NAME")),
     api_key = str(os.getenv("CLOUDINARY_API_KEY")),
@@ -81,6 +82,14 @@ async def get_images(user_id: Optional[UUID] = Query(None),format: Optional[Imag
     rows = await conn.fetch(query,*values)
     return [dict(row) for row in rows]
 
+@app.get("/image",response_model=Image)
+async def get_image(public_id:UUID,conn:Connection = Depends(get_db_conn)):
+    db_res = await conn.fetchrow("SELECT * FROM images WHERE public_id = $1",public_id)
+    if db_res is None:
+        raise HTTPException(status_code=404,detail="Image not found")
+    return dict(db_res)
+
+
 @app.post("/images")
 async def create_image(user_id:uuid.UUID=Form(...),title:str = Form(...),description:str = Form(...),image_file:UploadFile=File(...),conn:Connection=Depends(get_db_conn),auth_res = Depends(get_current_user)):
     # formリクエストを受けとって、cloudinaryにpubidをハッシュ化した画像をストア
@@ -101,7 +110,7 @@ async def create_image(user_id:uuid.UUID=Form(...),title:str = Form(...),descrip
         )
         
         # レスポンス
-        schema:CreateImage = CreateImage(public_id=public_id,user_id=user_id,title=title,description=description,format=format,version=version)
+        schema:Image =Image(public_id=public_id,user_id=user_id,title=title,description=description,format=format,version=version)
         return {"image_url":image_url,"image":schema}
     
     except Exception as e:
