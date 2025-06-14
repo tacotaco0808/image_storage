@@ -48,7 +48,7 @@ async def lifespan(app: FastAPI):
     print("🛑 Disconnected from database")
 
 
-app = FastAPI(lifespan=lifespan)
+app = FastAPI(lifespan=lifespan,root_path="/api")
     
 app.add_middleware(
     CORSMiddleware,
