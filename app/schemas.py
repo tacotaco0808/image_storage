@@ -23,5 +23,8 @@ class TokenData(BaseModel):
 
 class User(BaseModel):
     user_id:UUID
+    login_id:str
     user_name:str
-    hashed_password:str
+
+
+

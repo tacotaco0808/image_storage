@@ -1,19 +1,19 @@
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from datetime import timedelta
-from typing import AsyncGenerator, Optional
+from typing import  Optional
 import uuid
 from uuid import UUID
 import asyncpg
 from asyncpg import Connection
 from asyncpg.pool import Pool
-from fastapi import  Depends, FastAPI, File, Form, Query,UploadFile,HTTPException,Request
+from fastapi import  Depends, FastAPI, File, Form, Query,UploadFile,HTTPException
 import cloudinary,os
-from fastapi.security import OAuth2PasswordRequestForm, OAuth2PasswordBearer
+from fastapi.security import OAuth2PasswordRequestForm
 from auth import auth_user, create_access_token, get_current_user
-from database import DATABASE_URL
+from database import DATABASE_URL, get_db_conn
 from enums import ImageFormat
-from schemas import Image, Token
+from schemas import Image, Token, User
 from cloudinary.uploader import upload,destroy
 from dotenv import load_dotenv
 from security import oauth2_scheme
@@ -74,12 +74,6 @@ cloudinary.config(
     api_key = str(os.getenv("CLOUDINARY_API_KEY")),
     api_secret = str(os.getenv("CLOUDINARY_API_SECRET"))
 )
-# ジェネレータ関数で共通化 依存性注入でconn取得部分を共通化
-async def get_db_conn(request: Request) -> AsyncGenerator[Connection, None]:
-    db_pool = request.app.state.db_pool
-    async with db_pool.acquire() as conn:
-        yield conn  # 非同期ジェネレータとして返す
-
 
 @app.get("/images")
 async def get_images(user_id: Optional[UUID] = Query(None),format: Optional[ImageFormat] = Query(None),conn:Connection = Depends(get_db_conn)): # Optionalが型でNone or Value Queryが入力時の話
@@ -197,15 +191,14 @@ async def delete_user(user_uuid:UUID,conn:Connection = Depends(get_db_conn)):
     return {"message": "User deleted successfully"}
 
 @app.post("/login")
-async def login_for_access_token(form_data:OAuth2PasswordRequestForm = Depends())->Token:
+async def login_for_access_token(form_data:OAuth2PasswordRequestForm = Depends(),conn:Connection=Depends(get_db_conn)):
     # ログイン後トークンの作成
-    user_uuid = UUID(os.getenv("USER_ID"))
-    user = auth_user(user_id=user_uuid,user_name=form_data.username,password=form_data.password)
+    user= await auth_user(login_id=form_data.username,password=form_data.password,conn=conn)
     if not user:
         raise HTTPException(status_code=401,detail="Incorrect username or password",headers={"WWW-Authenticate": "Bearer"})
     minutes = float(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES") or 30)
     access_token_expires = timedelta(minutes=minutes)
     access_token = create_access_token(
-        data={"sub": user.user_name}, expires_delta=access_token_expires
+        data={"sub": user.login_id}, expires_delta=access_token_expires
     )
     return Token(access_token=access_token,token_type="bearer")

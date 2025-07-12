@@ -1,20 +1,31 @@
 from datetime import datetime, timedelta, timezone
+import hashlib
 import os
+from asyncpg import Connection
 from fastapi import Depends, HTTPException
 from jose import jwt,JWTError
 from typing import Union
-from uuid import UUID
+from database import get_db_conn
 from schemas import TokenData, User
 from security import oauth2_scheme
 
-def auth_user(user_id:UUID,user_name:str,password:str):   
-    if user_name != os.getenv("USER_NAME"):
+async def auth_user(login_id:str,password:str,conn:Connection):   
+    '''
+    ユーザを探してpasswordがあっているかどうかの認証
+    '''
+    row = await conn.fetchrow("SELECT * FROM users WHERE login_id = $1",login_id)
+    if row is None:
+        raise HTTPException(status_code=404,detail="User not found")
+    
+    if login_id != row["login_id"]:
         return False
-    if password != os.getenv("PASSWORD"):
+    
+    hashed_input = hashlib.sha256(password.encode()).hexdigest()
+    if hashed_input != row["password"]:
         return False
     
     
-    user:User = User(user_id=user_id,user_name=user_name,hashed_password=password)
+    user:User = User(user_id=row["user_id"],login_id=row["login_id"],user_name=row["name"])
     return user
 
 def create_access_token(data:dict ,expires_delta:Union[timedelta,None]=None):
@@ -34,7 +45,7 @@ def create_access_token(data:dict ,expires_delta:Union[timedelta,None]=None):
 
     return encoded_jwt
 
-async def get_current_user(token: str = Depends(oauth2_scheme)):
+async def get_current_user(token: str = Depends(oauth2_scheme),conn: Connection = Depends(get_db_conn) ):
     credentials_exception = HTTPException(
         status_code=401,
         detail="Could not validate credentials",
@@ -54,6 +65,7 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
     except JWTError:
         raise credentials_exception
     
+    row = await conn.fetchrow("SELECT * FROM users WHERE login_id = $1",username)
     if token_data.username != os.getenv("USER_NAME"):
             raise credentials_exception
     return "ok"
