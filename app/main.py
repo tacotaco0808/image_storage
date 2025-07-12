@@ -18,6 +18,7 @@ from cloudinary.uploader import upload,destroy
 from dotenv import load_dotenv
 from security import oauth2_scheme
 import hashlib
+import re
 load_dotenv()
 
 
@@ -152,12 +153,17 @@ async def delete_image(image_id:UUID,conn:Connection = Depends(get_db_conn),auth
     return {"detail":"Image deleted successfully"}
 
 @app.post("/users")
-async def create_user(name:str = Form(...),password:str = Form(...),conn:Connection = Depends(get_db_conn)):
+async def create_user(name:str = Form(...),login_id:str=Form(...),password:str = Form(...),conn:Connection = Depends(get_db_conn)):
     user_id = uuid.uuid4() # ユーザのUUIDを作成
     hashed_password = hashlib.sha256(password.encode()).hexdigest()
-    res = await conn.execute("INSERT INTO users (user_id,name,password) VALUES ($1,$2,$3)",user_id,name,hashed_password)
-    
-    return {"user_id":user_id,"name":name,"message":"User created successfully"}
+    if not re.fullmatch(r"^[a-zA-Z0-9_]+$",login_id): # login_id は半角英数字のみに限定
+        raise HTTPException(status_code=400,detail="login_id must contain only half-width letters, numbers, and underscores")
+    try:
+        res = await conn.execute("INSERT INTO users (user_id,name,login_id,password) VALUES ($1,$2,$3,$4)",user_id,name,login_id,hashed_password)
+    except asyncpg.UniqueViolationError:
+        raise HTTPException(status_code=409,detail="This login_id is already in use")
+
+    return {"user_id":user_id,"name":name,"login_id":login_id,"message":"User created successfully"}
 
 @app.get("/users")
 async def get_users(conn:Connection = Depends(get_db_conn)):
