@@ -17,6 +17,7 @@ from schemas import Image, Token
 from cloudinary.uploader import upload,destroy
 from dotenv import load_dotenv
 from security import oauth2_scheme
+import hashlib
 load_dotenv()
 
 
@@ -40,6 +41,16 @@ async def lifespan(app: FastAPI):
             title TEXT,
             description TEXT,
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+        """)
+
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            user_id UUID NOT NULL,
+            name VARCHAR NOT NULL,
+            password VARCHAR NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (user_id)
         );
         """)
     yield
@@ -139,6 +150,45 @@ async def delete_image(image_id:UUID,conn:Connection = Depends(get_db_conn),auth
         raise HTTPException(status_code=500, detail="Failed to delete image from Cloudinary")
     
     return {"detail":"Image deleted successfully"}
+
+@app.post("/users")
+async def create_user(name:str = Form(...),password:str = Form(...),conn:Connection = Depends(get_db_conn)):
+    user_id = uuid.uuid4() # ユーザのUUIDを作成
+    hashed_password = hashlib.sha256(password.encode()).hexdigest()
+    res = await conn.execute("INSERT INTO users (user_id,name,password) VALUES ($1,$2,$3)",user_id,name,hashed_password)
+    
+    return {"user_id":user_id,"name":name,"message":"User created successfully"}
+
+@app.get("/users")
+async def get_users(conn:Connection = Depends(get_db_conn)):
+    rows = await conn.fetch("SELECT * FROM users")
+    users = [] 
+    for row in rows: # password省く
+        user_dict = dict(row)
+        user_dict.pop("password",None)
+        users.append(user_dict)
+    
+    return users
+
+@app.get("/users/{user_uuid}")
+async def get_user(user_uuid:UUID,conn:Connection = Depends(get_db_conn)):
+    user_id = str(user_uuid)
+    row = await conn.fetchrow("SELECT * FROM users WHERE user_id = $1",user_id)
+    if row is None:
+        raise HTTPException(status_code=404,detail="User not found")
+    user_dict = dict(row)
+    user_dict.pop("password")
+    return user_dict
+
+@app.delete("/users/{user_uuid}")
+async def delete_user(user_uuid:UUID,conn:Connection = Depends(get_db_conn)):
+    user_id = str(user_uuid)
+    res = await conn.execute("DELETE FROM users WHERE user_id = $1",user_id)
+    command,count = res.split(" ")
+    if int(count) == 0:
+        raise HTTPException(status_code=404,detail="User not found")
+    
+    return {"message": "User deleted successfully"}
 
 @app.post("/login")
 async def login_for_access_token(form_data:OAuth2PasswordRequestForm = Depends())->Token:
