@@ -49,6 +49,7 @@ async def lifespan(app: FastAPI):
         CREATE TABLE IF NOT EXISTS users (
             user_id UUID NOT NULL,
             name VARCHAR NOT NULL,
+            login_id VARCHAR NOT NULL UNIQUE,
             password VARCHAR NOT NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (user_id)
