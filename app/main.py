@@ -13,7 +13,7 @@ from fastapi.security import OAuth2PasswordRequestForm
 from auth import auth_user, create_access_token, get_current_user
 from database import DATABASE_URL, get_db_conn
 from enums import ImageFormat
-from schemas import Image, Token, User
+from schemas import DBUser, Image, Token, User
 from cloudinary.uploader import upload,destroy
 from dotenv import load_dotenv
 from security import oauth2_scheme
@@ -104,10 +104,11 @@ async def get_image(public_id:UUID,conn:Connection = Depends(get_db_conn)):
 
 
 @app.post("/images")
-async def create_image(user_id:uuid.UUID=Form(...),title:str = Form(...),description:str = Form(...),image_file:UploadFile=File(...),conn:Connection=Depends(get_db_conn),auth_res = Depends(get_current_user)):
+async def create_image(title:str = Form(...),description:str = Form(...),image_file:UploadFile=File(...),conn:Connection=Depends(get_db_conn),current_user:DBUser = Depends(get_current_user)):
     # formリクエストを受けとって、cloudinaryにpubidをハッシュ化した画像をストア
     public_id = uuid.uuid4() # ストアする画像のUUID生成
     upload_contents = await image_file.read()
+    user_id = current_user.user_id
     try:
         # cloudinary操作
         
@@ -131,9 +132,19 @@ async def create_image(user_id:uuid.UUID=Form(...),title:str = Form(...),descrip
         raise HTTPException(status_code=500,detail=f"Database error: {e}")
     
 @app.delete("/images/{image_id}")
-async def delete_image(image_id:UUID,conn:Connection = Depends(get_db_conn),auth_res = Depends(get_current_user)):
+async def delete_image(image_id:UUID,conn:Connection = Depends(get_db_conn),current_user:DBUser = Depends(get_current_user)):
     
     # database 操作
+    row = await conn.fetchrow("SELECT * FROM images WHERE public_id = $1",image_id)
+    if row is None:
+        raise HTTPException(status_code=404,detail="Image not found")
+    
+    dict_row = dict(row)
+    if dict_row["user_id"] != current_user.user_id:
+        raise HTTPException(
+            status_code=403,
+            detail="You do not have permission to perform this action"
+        )
     
     res = await conn.execute("DELETE FROM images WHERE public_id = $1",image_id)
     if res == "DELETE 0":

@@ -5,8 +5,8 @@ from asyncpg import Connection
 from fastapi import Depends, HTTPException
 from jose import jwt,JWTError
 from typing import Union
-from database import get_db_conn
-from schemas import TokenData, User
+from database import get_db_conn, get_user_from_db
+from schemas import DBUser, TokenData, User
 from security import oauth2_scheme
 
 async def auth_user(login_id:str,password:str,conn:Connection):   
@@ -65,9 +65,8 @@ async def get_current_user(token: str = Depends(oauth2_scheme),conn: Connection 
     except JWTError:
         raise credentials_exception
     
-    row = await conn.fetchrow("SELECT * FROM users WHERE login_id = $1",username)
-    if token_data.username != os.getenv("USER_NAME"):
-            raise credentials_exception
-    return "ok"
+    user:DBUser = await get_user_from_db(username=username,conn=conn)
+    
+    return user
     
     
