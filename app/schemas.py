@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Union
 from uuid import UUID
 from pydantic import BaseModel
@@ -23,5 +24,10 @@ class TokenData(BaseModel):
 
 class User(BaseModel):
     user_id:UUID
+    login_id:str
     user_name:str
+
+class DBUser(User):
+    created_at:datetime
     hashed_password:str
+    
