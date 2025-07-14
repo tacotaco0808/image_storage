@@ -47,6 +47,7 @@ def create_access_token(data:dict ,expires_delta:Union[timedelta,None]=None):
 
 async def get_current_user(request:Request,conn: Connection = Depends(get_db_conn) ):
     token = request.cookies.get("access_token")
+    print("✅ CookieToken:", request.cookies.get("access_token"))
 
     credentials_exception = HTTPException(
         status_code=401,
