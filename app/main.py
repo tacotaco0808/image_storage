@@ -7,7 +7,7 @@ from uuid import UUID
 import asyncpg
 from asyncpg import Connection
 from asyncpg.pool import Pool
-from fastapi import  Depends, FastAPI, File, Form, Query,UploadFile,HTTPException
+from fastapi import  Depends, FastAPI, File, Form, Query, Response,UploadFile,HTTPException
 import cloudinary,os
 from fastapi.security import OAuth2PasswordRequestForm
 from auth import auth_user, create_access_token, get_current_user
@@ -203,7 +203,7 @@ async def delete_user(user_uuid:UUID,conn:Connection = Depends(get_db_conn)):
     return {"message": "User deleted successfully"}
 
 @app.post("/login")
-async def login_for_access_token(form_data:OAuth2PasswordRequestForm = Depends(),conn:Connection=Depends(get_db_conn)):
+async def login_for_access_token(res:Response,form_data:OAuth2PasswordRequestForm = Depends(),conn:Connection=Depends(get_db_conn)):
     # ログイン後トークンの作成
     user= await auth_user(login_id=form_data.username,password=form_data.password,conn=conn)
     if not user:
@@ -213,4 +213,11 @@ async def login_for_access_token(form_data:OAuth2PasswordRequestForm = Depends()
     access_token = create_access_token(
         data={"sub": user.login_id}, expires_delta=access_token_expires
     )
-    return Token(access_token=access_token,token_type="bearer")
+    token = Token(access_token=access_token,token_type="bearer")
+    res.set_cookie(key="access_token",
+        value=token.access_token,
+        httponly=True,
+        secure=False,  # 本番では True (HTTPS)
+        max_age=1800,
+        path="/")
+    return {"message":"Login successful"}
