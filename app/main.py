@@ -219,7 +219,7 @@ async def login_for_access_token(res:Response,form_data:OAuth2PasswordRequestFor
         httponly=True,
         secure=False,  # 本番では True (HTTPS)
         max_age=1800,
-        samesite="None"
+        samesite="None",
         path="/")
     return {"message":"Login successful"}
 
