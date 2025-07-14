@@ -45,29 +45,24 @@ def create_access_token(data:dict ,expires_delta:Union[timedelta,None]=None):
 
     return encoded_jwt
 
-async def get_current_user(request:Request,header_token: str = Depends(oauth2_scheme),conn: Connection = Depends(get_db_conn) ):
-    cookie_token = request.cookies.get("access_token")
-    token = cookie_token or header_token
-    
-    if cookie_token:
-        print("✅ Token from Cookie")
-    elif header_token:
-        print("✅ Token from Authorization Header")
-    else:
-        print("❌ No token found in cookie or header")
+async def get_current_user(request:Request,conn: Connection = Depends(get_db_conn) ):
+    token = request.cookies.get("access_token")
 
     credentials_exception = HTTPException(
         status_code=401,
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
+    if not token:
+        raise credentials_exception
+    
     # 環境変数の取得とチェック
     SECRET_KEY = os.getenv("SECRET_KEY")
     ALGORITHM = os.getenv("ALGORITHM")   
     if not SECRET_KEY or not ALGORITHM:
         raise RuntimeError("SECRET_KEYとALGORITHMの環境変数が設定されていません")
     try:
-        payload = jwt.decode(token,SECRET_KEY,[ALGORITHM])
+        payload = jwt.decode(token,SECRET_KEY,[ALGORITHM]) 
         username = payload.get("sub")
         if username is None:
             raise credentials_exception
