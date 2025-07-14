@@ -217,7 +217,7 @@ async def login_for_access_token(res:Response,form_data:OAuth2PasswordRequestFor
     res.set_cookie(key="access_token",
         value=token.access_token,
         httponly=True,
-        secure=False,  # 本番では True (HTTPS)
+        secure=True,  # 本番では True (HTTPS)
         max_age=1800,
         samesite="None",
         path="/")
