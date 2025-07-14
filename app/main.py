@@ -221,3 +221,9 @@ async def login_for_access_token(res:Response,form_data:OAuth2PasswordRequestFor
         max_age=1800,
         path="/")
     return {"message":"Login successful"}
+
+@app.get("/me")
+async def get_me(current_user:DBUser = Depends(get_current_user)):
+    dict_current_user = current_user.model_dump()
+    dict_current_user.pop("hashed_password",None)
+    return dict_current_user

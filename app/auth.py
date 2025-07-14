@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import os
 from asyncpg import Connection
-from fastapi import Depends, HTTPException
+from fastapi import Depends, HTTPException, Request
 from jose import jwt,JWTError
 from typing import Union
 from database import get_db_conn, get_user_from_db
@@ -45,7 +45,17 @@ def create_access_token(data:dict ,expires_delta:Union[timedelta,None]=None):
 
     return encoded_jwt
 
-async def get_current_user(token: str = Depends(oauth2_scheme),conn: Connection = Depends(get_db_conn) ):
+async def get_current_user(request:Request,header_token: str = Depends(oauth2_scheme),conn: Connection = Depends(get_db_conn) ):
+    cookie_token = request.cookies.get("access_token")
+    token = cookie_token or header_token
+    
+    if cookie_token:
+        print("✅ Token from Cookie")
+    elif header_token:
+        print("✅ Token from Authorization Header")
+    else:
+        print("❌ No token found in cookie or header")
+
     credentials_exception = HTTPException(
         status_code=401,
         detail="Could not validate credentials",
