@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import os
 from asyncpg import Connection
-from fastapi import Depends, HTTPException
+from fastapi import Depends, HTTPException, Request
 from jose import jwt,JWTError
 from typing import Union
 from database import get_db_conn, get_user_from_db
@@ -45,19 +45,25 @@ def create_access_token(data:dict ,expires_delta:Union[timedelta,None]=None):
 
     return encoded_jwt
 
-async def get_current_user(token: str = Depends(oauth2_scheme),conn: Connection = Depends(get_db_conn) ):
+async def get_current_user(request:Request,conn: Connection = Depends(get_db_conn) ):
+    token = request.cookies.get("access_token")
+    print("✅ CookieToken:", request.cookies.get("access_token"))
+
     credentials_exception = HTTPException(
         status_code=401,
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
+    if not token:
+        raise credentials_exception
+    
     # 環境変数の取得とチェック
     SECRET_KEY = os.getenv("SECRET_KEY")
     ALGORITHM = os.getenv("ALGORITHM")   
     if not SECRET_KEY or not ALGORITHM:
         raise RuntimeError("SECRET_KEYとALGORITHMの環境変数が設定されていません")
     try:
-        payload = jwt.decode(token,SECRET_KEY,[ALGORITHM])
+        payload = jwt.decode(token,SECRET_KEY,[ALGORITHM]) 
         username = payload.get("sub")
         if username is None:
             raise credentials_exception
