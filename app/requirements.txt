@@ -4,3 +4,4 @@ asyncpg
 python-multipart
 cloudinary
 python-jose[cryptography]
+websockets

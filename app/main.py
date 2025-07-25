@@ -7,7 +7,7 @@ from uuid import UUID
 import asyncpg
 from asyncpg import Connection
 from asyncpg.pool import Pool
-from fastapi import  Depends, FastAPI, File, Form, Query, Response,UploadFile,HTTPException
+from fastapi import  Depends, FastAPI, File, Form, Query, Response,UploadFile,HTTPException, WebSocket, WebSocketDisconnect
 import cloudinary,os
 from fastapi.security import OAuth2PasswordRequestForm
 from auth import auth_user, create_access_token, get_current_user
@@ -19,6 +19,8 @@ from dotenv import load_dotenv
 from security import oauth2_scheme
 import hashlib
 import re
+
+from websocket import ConnectionManager
 load_dotenv()
 
 
@@ -62,7 +64,6 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan,root_path="/api")
-    
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[str(os.getenv("FRONT_IP")),"http://localhost:5173"],
@@ -219,7 +220,7 @@ async def login_for_access_token(res:Response,form_data:OAuth2PasswordRequestFor
         httponly=True,
         secure=True,  # 本番では True (HTTPS)
         max_age=1800,
-        samesite="None",
+        samesite="none",
         path="/")
     return {"message":"Login successful"}
 
@@ -228,3 +229,35 @@ async def get_me(current_user:DBUser = Depends(get_current_user)):
     dict_current_user = current_user.model_dump()
     dict_current_user.pop("hashed_password",None)
     return dict_current_user
+
+wsmanager = ConnectionManager()
+
+@app.websocket("/ws/{ws_id}")
+async def websocket_endpoint(websocket:WebSocket,ws_id:str):
+    coccection_accepted = await wsmanager.addWebSocket(websocket,ws_id)
+    if not coccection_accepted:
+        return 
+    
+    await wsmanager.broadCastJson({"event":"login","player_id":ws_id},ws_id)
+    try:
+        while(True):
+            data = await websocket.receive_text()
+            # await wsmanager.sendMessage(websocket,data)
+            # await wsmanager.broadCastMessage(f"hello:{ws_id}")
+            # await wsmanager.broadCastJson(event_type="position",user_id="aiueo",x=100,y=100)
+            # 全部jsonで扱って、イベントの先頭で区別したほうがよさそう。"message","position"
+    except WebSocketDisconnect:
+        await wsmanager.broadCastJson({"event":"logout","player_id":ws_id},ws_id)
+        await wsmanager.deleteWebSocket(websocket,ws_id)
+    except RuntimeError:
+        await wsmanager.broadCastJson({"event":"logout!","player_id":ws_id},ws_id)
+        await wsmanager.deleteWebSocket(websocket,ws_id)
+    except Exception as e:
+        await wsmanager.broadCastJson({"event":"logout!!","player_id":ws_id},ws_id)
+        await wsmanager.deleteWebSocket(websocket,ws_id)
+        
+    # await websocket.accept()
+    # while(True):
+    #     data = await websocket.receive_text()
+    #     print(f"From Client:{data}")
+    #     await websocket.send_text(f"From Server:{data}")
