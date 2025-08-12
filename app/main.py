@@ -10,7 +10,8 @@ from asyncpg.pool import Pool
 from fastapi import  Depends, FastAPI, File, Form, Query, Response,UploadFile,HTTPException, WebSocket, WebSocketDisconnect
 import cloudinary,os
 from fastapi.security import OAuth2PasswordRequestForm
-from auth import auth_user, create_access_token, get_current_user
+from fastapi.websockets import WebSocketState
+from auth import auth_user, create_access_token, get_current_user,get_current_user_ws
 from database import DATABASE_URL, get_db_conn
 from enums import ImageFormat
 from schemas import DBUser, Image, Token, User
@@ -234,9 +235,30 @@ wsmanager = ConnectionManager()
 
 @app.websocket("/ws/{ws_id}")
 async def websocket_endpoint(websocket:WebSocket,ws_id:str):
-    coccection_accepted = await wsmanager.addWebSocket(websocket,ws_id)
-    if not coccection_accepted:
+    current_user = await get_current_user_ws(websocket,websocket.app)
+    if not current_user:
+        await websocket.close(code=4003, reason="Unauthorized")
+        print(f"認証がありません")
         return 
+    else:
+        print(f"認証されています")
+        print(f"currentuser:{current_user}")
+        
+
+    await wsmanager.addWebSocket(websocket,ws_id)
+    # if not coccection_accepted:
+    #     return 
+    
+    for user_id,ws in wsmanager.websockets.items():
+        if not ws_id == user_id and not ws.client_state == WebSocketState.DISCONNECTED:
+            await wsmanager.sendJson({"event":"login","player_id":user_id},ws_id,websocket)
+            def message():
+                text = ""
+                for id,ws in wsmanager.websockets.items():
+                    text += f"ウェブソケット:{id}:{ws.client_state}\n"
+                return text
+            await wsmanager.sendMessage(websocket,f"{message()}")
+    # すでにサーバに接続されているクライアントを今接続してきたクライアントの画面に反映する
     
     await wsmanager.broadCastJson({"event":"login","player_id":ws_id},ws_id)
     try:
@@ -250,10 +272,10 @@ async def websocket_endpoint(websocket:WebSocket,ws_id:str):
         await wsmanager.broadCastJson({"event":"logout","player_id":ws_id},ws_id)
         await wsmanager.deleteWebSocket(websocket,ws_id)
     except RuntimeError:
-        await wsmanager.broadCastJson({"event":"logout!","player_id":ws_id},ws_id)
+        await wsmanager.broadCastJson({"event":"logout","player_id":ws_id},ws_id)
         await wsmanager.deleteWebSocket(websocket,ws_id)
     except Exception as e:
-        await wsmanager.broadCastJson({"event":"logout!!","player_id":ws_id},ws_id)
+        await wsmanager.broadCastJson({"event":"logout","player_id":ws_id},ws_id)
         await wsmanager.deleteWebSocket(websocket,ws_id)
         
     # await websocket.accept()
