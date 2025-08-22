@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import os
 from asyncpg import Connection
-from fastapi import Depends, HTTPException, Request
+from fastapi import Depends, HTTPException, Request, WebSocket
 from jose import jwt,JWTError
 from typing import Union
 from database import get_db_conn, get_user_from_db
@@ -75,4 +75,34 @@ async def get_current_user(request:Request,conn: Connection = Depends(get_db_con
     
     return user
     
+async def get_current_user_ws(websocket:WebSocket,app ):
+    token = websocket.cookies.get("access_token")
+    print("✅ CookieToken:", websocket.cookies.get("access_token"))
+
+    credentials_exception = HTTPException(
+        status_code=401,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    if not token:
+        return
+    
+    # 環境変数の取得とチェック
+    SECRET_KEY = os.getenv("SECRET_KEY")
+    ALGORITHM = os.getenv("ALGORITHM")   
+    if not SECRET_KEY or not ALGORITHM:
+        raise RuntimeError("SECRET_KEYとALGORITHMの環境変数が設定されていません")
+    try:
+        payload = jwt.decode(token,SECRET_KEY,[ALGORITHM]) 
+        username = payload.get("sub")
+        if username is None:
+            return
+        token_data = TokenData(username=username)   
+    except JWTError:
+        return
+    
+    async with app.state.db_pool.acquire() as conn:
+        user:DBUser = await get_user_from_db(username=username,conn=conn)
+    
+    return user
     
