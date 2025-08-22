@@ -1,3 +1,5 @@
+import asyncio
+import json
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from datetime import timedelta
@@ -14,6 +16,7 @@ from fastapi.websockets import WebSocketState
 from auth import auth_user, create_access_token, get_current_user,get_current_user_ws
 from database import DATABASE_URL, get_db_conn
 from enums import ImageFormat
+from eventHandler import EventHandler
 from schemas import DBUser, Image, Token, User
 from cloudinary.uploader import upload,destroy
 from dotenv import load_dotenv
@@ -235,6 +238,7 @@ wsmanager = ConnectionManager()
 
 @app.websocket("/ws/{ws_id}")
 async def websocket_endpoint(websocket:WebSocket,ws_id:str):
+    # ws_idは接続してきたクライアントのID
     current_user = await get_current_user_ws(websocket,websocket.app)
     if not current_user:
         await websocket.close(code=4003, reason="Unauthorized")
@@ -243,12 +247,15 @@ async def websocket_endpoint(websocket:WebSocket,ws_id:str):
     else:
         print(f"認証されています")
         print(f"currentuser:{current_user}")
-        
+
+ 
 
     await wsmanager.addWebSocket(websocket,ws_id)
     # if not coccection_accepted:
     #     return 
     
+    
+    # すでにサーバに接続されているクライアントを今接続してきたクライアントの画面に反映する
     for user_id,ws in wsmanager.websockets.items():
         if not ws_id == user_id and not ws.client_state == WebSocketState.DISCONNECTED:
             await wsmanager.sendJson({"event":"login","player_id":user_id},ws_id,websocket)
@@ -257,13 +264,20 @@ async def websocket_endpoint(websocket:WebSocket,ws_id:str):
                 for id,ws in wsmanager.websockets.items():
                     text += f"ウェブソケット:{id}:{ws.client_state}\n"
                 return text
-            await wsmanager.sendMessage(websocket,f"{message()}")
-    # すでにサーバに接続されているクライアントを今接続してきたクライアントの画面に反映する
+            # await wsmanager.sendMessage(websocket,f"{message()}")
     
     await wsmanager.broadCastJson({"event":"login","player_id":ws_id},ws_id)
+    eventHandler = EventHandler(wsmanager)
     try:
         while(True):
             data = await websocket.receive_text()
+            try:
+                event = json.loads(data)
+                print(f"From Client:{event}",flush=True)
+                await eventHandler.handle(event=event,websocket=websocket,user_id=ws_id)
+
+            except Exception as e:
+                print(f"{e}")
             # await wsmanager.sendMessage(websocket,data)
             # await wsmanager.broadCastMessage(f"hello:{ws_id}")
             # await wsmanager.broadCastJson(event_type="position",user_id="aiueo",x=100,y=100)

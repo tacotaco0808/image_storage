@@ -47,8 +47,8 @@ class ConnectionManager():
         #     return True
         # return False
 
-    async def sendMessage (self,websocket:WebSocket,string:str):
-        await websocket.send_text(f"From Server : {string}")
+    # async def sendMessage (self,websocket:WebSocket,string:str):
+    #     await websocket.send_text(f"From Server : {string}")
 
     async def sendJson(self, json_data,user_id,websocket: WebSocket):
         if websocket.client_state == WebSocketState.CONNECTED:
@@ -63,12 +63,12 @@ class ConnectionManager():
                 await ws.send_text(f"{string}")
         
     async def broadCastJson(self, json_data, user_id: str):
+        # user_idは送信したくないクライアントのID
         for key_id, ws in self.websockets.items():
             if key_id == user_id:
                 continue  # 自分自身には送信しない
             try:
                 if ws.client_state == WebSocketState.CONNECTED:
-                    print(f"boradjson")
                     await ws.send_json(json_data)
                 else:
                     await self.deleteWebSocket(ws, key_id)
