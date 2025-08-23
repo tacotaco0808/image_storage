@@ -1,3 +1,5 @@
+import asyncio
+import json
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from datetime import timedelta
@@ -7,18 +9,22 @@ from uuid import UUID
 import asyncpg
 from asyncpg import Connection
 from asyncpg.pool import Pool
-from fastapi import  Depends, FastAPI, File, Form, Query,UploadFile,HTTPException
+from fastapi import  Depends, FastAPI, File, Form, Query, Response,UploadFile,HTTPException, WebSocket, WebSocketDisconnect
 import cloudinary,os
 from fastapi.security import OAuth2PasswordRequestForm
-from auth import auth_user, create_access_token, get_current_user
+from fastapi.websockets import WebSocketState
+from auth import auth_user, create_access_token, get_current_user,get_current_user_ws
 from database import DATABASE_URL, get_db_conn
 from enums import ImageFormat
+from eventHandler import EventHandler
 from schemas import DBUser, Image, Token, User
 from cloudinary.uploader import upload,destroy
 from dotenv import load_dotenv
 from security import oauth2_scheme
 import hashlib
 import re
+
+from websocket import ConnectionManager
 load_dotenv()
 
 
@@ -62,10 +68,9 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan,root_path="/api")
-    
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[str(os.getenv("FRONT_IP"))],
+    allow_origins=[str(os.getenv("FRONT_IP")),"http://localhost:5173"],
     allow_credentials=True,
     allow_methods=["*"],  # 全メソッド（GET, POSTなど）許可
     allow_headers=["*"],  # 全ヘッダー許可)
@@ -203,7 +208,7 @@ async def delete_user(user_uuid:UUID,conn:Connection = Depends(get_db_conn)):
     return {"message": "User deleted successfully"}
 
 @app.post("/login")
-async def login_for_access_token(form_data:OAuth2PasswordRequestForm = Depends(),conn:Connection=Depends(get_db_conn)):
+async def login_for_access_token(res:Response,form_data:OAuth2PasswordRequestForm = Depends(),conn:Connection=Depends(get_db_conn)):
     # ログイン後トークンの作成
     user= await auth_user(login_id=form_data.username,password=form_data.password,conn=conn)
     if not user:
@@ -213,4 +218,82 @@ async def login_for_access_token(form_data:OAuth2PasswordRequestForm = Depends()
     access_token = create_access_token(
         data={"sub": user.login_id}, expires_delta=access_token_expires
     )
-    return Token(access_token=access_token,token_type="bearer")
+    token = Token(access_token=access_token,token_type="bearer")
+    res.set_cookie(key="access_token",
+        value=token.access_token,
+        httponly=True,
+        secure=True,  # 本番では True (HTTPS)
+        max_age=1800,
+        samesite="none",
+        path="/")
+    return {"message":"Login successful"}
+
+@app.get("/me")
+async def get_me(current_user:DBUser = Depends(get_current_user)):
+    dict_current_user = current_user.model_dump()
+    dict_current_user.pop("hashed_password",None)
+    return dict_current_user
+
+wsmanager = ConnectionManager()
+
+@app.websocket("/ws/{ws_id}")
+async def websocket_endpoint(websocket:WebSocket,ws_id:str):
+    # ws_idは接続してきたクライアントのID
+    current_user = await get_current_user_ws(websocket,websocket.app)
+    if not current_user:
+        await websocket.close(code=4003, reason="Unauthorized")
+        print(f"認証がありません")
+        return 
+    else:
+        print(f"認証されています")
+        print(f"currentuser:{current_user}")
+
+ 
+
+    await wsmanager.addWebSocket(websocket,ws_id)
+    # if not coccection_accepted:
+    #     return 
+    
+    
+    # すでにサーバに接続されているクライアントを今接続してきたクライアントの画面に反映する
+    for user_id,ws in wsmanager.websockets.items():
+        if not ws_id == user_id and not ws.client_state == WebSocketState.DISCONNECTED:
+            await wsmanager.sendJson({"event":"login","player_id":user_id},ws_id,websocket)
+            def message():
+                text = ""
+                for id,ws in wsmanager.websockets.items():
+                    text += f"ウェブソケット:{id}:{ws.client_state}\n"
+                return text
+            # await wsmanager.sendMessage(websocket,f"{message()}")
+    
+    await wsmanager.broadCastJson({"event":"login","player_id":ws_id},ws_id)
+    eventHandler = EventHandler(wsmanager)
+    try:
+        while(True):
+            data = await websocket.receive_text()
+            try:
+                event = json.loads(data)
+                print(f"From Client:{event}",flush=True)
+                await eventHandler.handle(event=event,websocket=websocket,user_id=ws_id)
+
+            except Exception as e:
+                print(f"{e}")
+            # await wsmanager.sendMessage(websocket,data)
+            # await wsmanager.broadCastMessage(f"hello:{ws_id}")
+            # await wsmanager.broadCastJson(event_type="position",user_id="aiueo",x=100,y=100)
+            # 全部jsonで扱って、イベントの先頭で区別したほうがよさそう。"message","position"
+    except WebSocketDisconnect:
+        await wsmanager.broadCastJson({"event":"logout","player_id":ws_id},ws_id)
+        await wsmanager.deleteWebSocket(websocket,ws_id)
+    except RuntimeError:
+        await wsmanager.broadCastJson({"event":"logout","player_id":ws_id},ws_id)
+        await wsmanager.deleteWebSocket(websocket,ws_id)
+    except Exception as e:
+        await wsmanager.broadCastJson({"event":"logout","player_id":ws_id},ws_id)
+        await wsmanager.deleteWebSocket(websocket,ws_id)
+        
+    # await websocket.accept()
+    # while(True):
+    #     data = await websocket.receive_text()
+    #     print(f"From Client:{data}")
+    #     await websocket.send_text(f"From Server:{data}")
