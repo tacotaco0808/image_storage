@@ -25,7 +25,7 @@ async def auth_user(login_id:str,password:str,conn:Connection):
         return False
     
     
-    user:User = User(user_id=row["user_id"],login_id=row["login_id"],user_name=row["name"])
+    user:User = User(user_id=row["user_id"],login_id=row["login_id"],name=row["name"])
     return user
 
 def create_access_token(data:dict ,expires_delta:Union[timedelta,None]=None):

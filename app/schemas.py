@@ -25,7 +25,7 @@ class TokenData(BaseModel):
 class User(BaseModel):
     user_id:UUID
     login_id:str
-    user_name:str
+    name:str
 
 class DBUser(User):
     created_at:datetime
