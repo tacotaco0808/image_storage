@@ -57,6 +57,11 @@ async def get_current_user(request:Request,conn: Connection = Depends(get_db_con
     if not token:
         raise credentials_exception
     
+    # ブラックリストチェック
+    from main import is_token_blacklisted
+    if is_token_blacklisted(token):
+        raise credentials_exception
+    
     # 環境変数の取得とチェック
     SECRET_KEY = os.getenv("SECRET_KEY")
     ALGORITHM = os.getenv("ALGORITHM")   
@@ -85,6 +90,11 @@ async def get_current_user_ws(websocket:WebSocket,app ):
         headers={"WWW-Authenticate": "Bearer"},
     )
     if not token:
+        return
+    
+    # ブラックリストチェック
+    from main import is_token_blacklisted
+    if is_token_blacklisted(token):
         return
     
     # 環境変数の取得とチェック

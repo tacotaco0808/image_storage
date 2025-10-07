@@ -9,7 +9,7 @@ from uuid import UUID
 import asyncpg
 from asyncpg import Connection
 from asyncpg.pool import Pool
-from fastapi import  Depends, FastAPI, File, Form, Query, Response,UploadFile,HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import  Depends, FastAPI, File, Form, Query, Request, Response,UploadFile,HTTPException, WebSocket, WebSocketDisconnect
 import cloudinary,os
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.websockets import WebSocketState
@@ -27,7 +27,53 @@ import re
 from websocket import ConnectionManager
 load_dotenv()
 
+# JWTブラックリスト管理用の辞書（トークン: 有効期限）
+from datetime import datetime
+import os
+from jose import jwt
+blacklisted_tokens = {}
 
+def add_token_to_blacklist(token: str):
+    """トークンをブラックリストに追加（有効期限付き）"""
+    try:
+        SECRET_KEY = os.getenv("SECRET_KEY")
+        ALGORITHM = os.getenv("ALGORITHM")
+        if SECRET_KEY and ALGORITHM:
+            payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+            exp_timestamp = payload.get("exp")
+            if exp_timestamp:
+                exp_datetime = datetime.fromtimestamp(exp_timestamp)
+                blacklisted_tokens[token] = exp_datetime
+    except Exception:
+        # デコードに失敗した場合は、現在時刻から1時間後を設定
+        blacklisted_tokens[token] = datetime.now() + timedelta(hours=1)
+
+def cleanup_expired_tokens():
+    """期限切れのトークンをブラックリストから削除"""
+    now = datetime.now()
+    expired_tokens = [token for token, exp_time in blacklisted_tokens.items() if now > exp_time]
+    for token in expired_tokens:
+        blacklisted_tokens.pop(token, None)
+    if expired_tokens:
+        print(f"期限切れトークン {len(expired_tokens)} 個を削除しました")
+
+def is_token_blacklisted(token: str) -> bool:
+    """トークンがブラックリストに含まれているかチェック"""
+    if token in blacklisted_tokens:
+        # 期限をチェック
+        exp_time = blacklisted_tokens[token]
+        if datetime.now() > exp_time:
+            # 期限切れなので削除
+            blacklisted_tokens.pop(token, None)
+            return False
+        return True
+    return False
+
+async def periodic_token_cleanup():
+    """定期的にブラックリストの期限切れトークンをクリーンアップ"""
+    while True:
+        await asyncio.sleep(3600)  # 1時間ごとに実行
+        cleanup_expired_tokens()
 
 # 初期化（最初に一度だけ呼ぶ）
 @asynccontextmanager
@@ -37,6 +83,10 @@ async def lifespan(app: FastAPI):
     app.state.db_pool = db_pool # fastapiのstateへ保持|poolはSQLへの接続を管理するオブジェクト
 
     print("✅ Connected to database")
+    
+    # ブラックリストクリーンアップタスクを開始
+    cleanup_task = asyncio.create_task(periodic_token_cleanup())
+    print("✅ Started token cleanup task")
     # テーブル作成を起動時に実行（1回だけ）
     async with app.state.db_pool.acquire() as conn: # acquireで１つ接続を借りて使い、async withが終わると自動で返却
         await conn.execute("""
@@ -63,6 +113,7 @@ async def lifespan(app: FastAPI):
         """)
     yield
     # 後処理
+    cleanup_task.cancel()
     await app.state.db_pool.close()
     print("🛑 Disconnected from database")
 
@@ -227,6 +278,29 @@ async def login_for_access_token(res:Response,form_data:OAuth2PasswordRequestFor
         samesite="none",
         path="/")
     return {"message":"Login successful"}
+
+@app.post("/logout")  
+async def logout_user(request: Request, response: Response):
+    """ログアウト処理 - JWTトークンをブラックリストに追加"""
+    token = request.cookies.get("access_token")
+    
+    if token:
+        # JWTをブラックリストに追加（有効期限付き）
+        add_token_to_blacklist(token)
+        print(f"トークンをブラックリストに追加: {token[:20]}...")
+        
+        # 期限切れトークンのクリーンアップ
+        cleanup_expired_tokens()
+    
+    # クッキーをクリア
+    response.delete_cookie(
+        key="access_token",
+        path="/",
+        samesite="none",
+        secure=True
+    )
+    
+    return {"message": "ログアウトしました"}
 
 @app.get("/me")
 async def get_me(current_user:DBUser = Depends(get_current_user)):
