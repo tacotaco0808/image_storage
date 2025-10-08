@@ -133,7 +133,7 @@ cloudinary.config(
 )
 
 @app.get("/images")
-async def get_images(user_id: Optional[UUID] = Query(None),format: Optional[ImageFormat] = Query(None),conn:Connection = Depends(get_db_conn)): # Optionalが型でNone or Value Queryが入力時の話
+async def get_images(user_id: Optional[UUID] = Query(None),format: Optional[ImageFormat] = Query(None),limit: Optional[int] = Query(None),offset: Optional[int] = Query(None),conn:Connection = Depends(get_db_conn)): # Optionalが型でNone or Value Queryが入力時の話
     # クエリパラメータから検索ワードに一致する画像データ取得
     clauses = []
     values=[]
@@ -143,14 +143,36 @@ async def get_images(user_id: Optional[UUID] = Query(None),format: Optional[Imag
     if format:
         clauses.append(f"format = ${len(values)+1}")
         values.append(format)
+    
+    # WHERE句の構築
+    where_clause = ""
     if clauses:
-        query = "SELECT * FROM images WHERE "+ " AND ".join(clauses)
-        # " AND ".join(clauses) clausesの中身をANDでつないで文字列に変換する
-    else:
-        query = "SELECT * FROM images"
+        where_clause = "WHERE " + " AND ".join(clauses)
+    
+    # 総数を取得するクエリ
+    count_query = f"SELECT COUNT(*) FROM images {where_clause}"
+    total_count = await conn.fetchval(count_query, *values)
+    
+    # データを取得するクエリ
+    query = f"SELECT * FROM images {where_clause} ORDER BY created_at DESC"
+    
+    if limit is not None:
+        query += f" LIMIT ${len(values)+1}"
+        values.append(limit)
+    
+    if offset is not None:
+        query += f" OFFSET ${len(values)+1}"
+        values.append(offset)
 
     rows = await conn.fetch(query,*values)
-    return [dict(row) for row in rows]
+    images = [dict(row) for row in rows]
+    
+    # 総数と画像データを返す
+    return {
+        "images": images,
+        "total": total_count,
+        "count": len(images)
+    }
 
 @app.get("/image",response_model=Image)
 async def get_image(public_id:UUID,conn:Connection = Depends(get_db_conn)):
