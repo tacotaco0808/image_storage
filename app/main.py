@@ -174,13 +174,22 @@ async def get_images(user_id: Optional[UUID] = Query(None),format: Optional[Imag
         "count": len(images)
     }
 
-@app.get("/image",response_model=Image)
-async def get_image(public_id:UUID,conn:Connection = Depends(get_db_conn)):
-    db_res = await conn.fetchrow("SELECT * FROM images WHERE public_id = $1",public_id)
+@app.get("/images/{image_id}")  # response_modelを削除
+async def get_image_by_id(image_id: UUID, conn: Connection = Depends(get_db_conn)):
+    """特定の画像のメタデータを取得"""
+    db_res = await conn.fetchrow("SELECT * FROM images WHERE public_id = $1", image_id)
     if db_res is None:
-        raise HTTPException(status_code=404,detail="Image not found")
-    return dict(db_res)
-
+        raise HTTPException(status_code=404, detail="Image not found")
+    
+    image_dict = dict(db_res)
+    
+    # Cloudinaryの画像URLを生成
+    cloudinary_url = f"https://res.cloudinary.com/{os.getenv('CLOUDINARY_CLOUD_NAME')}/image/upload/v{image_dict['version']}/{image_dict['public_id']}.{image_dict['format']}"
+    
+    return {
+        **image_dict,
+        "image_url": cloudinary_url
+    }
 
 @app.post("/images")
 async def create_image(title:str = Form(...),description:str = Form(...),image_file:UploadFile=File(...),conn:Connection=Depends(get_db_conn),current_user:DBUser = Depends(get_current_user)):
