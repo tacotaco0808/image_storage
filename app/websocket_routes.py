@@ -17,18 +17,17 @@ async def websocket_endpoint(websocket: WebSocket, ws_id: str):# ws_idは接続�
         print(f"WebSocket認証失敗: {ws_id}")
         return 
     
-    print(f"WebSocket認証成功: user_id={current_user.user_id}, ws_id={ws_id}")
-
     # 接続リストへ追加
     await wsmanager.addWebSocket(websocket, ws_id)
 
-    # すでにサーバに接続されているクライアントを今接続してきたクライアントの画面に反映する
+    # すでにサーバに接続されているクライアントを画面に反映する
     for user_id, ws in wsmanager.websockets.items():
         if not ws_id == user_id and not ws.client_state == WebSocketState.DISCONNECTED:
             await wsmanager.sendJson({"event": "login", "player_id": user_id}, ws_id, websocket)
             
-    
+    # 既存参加中のユーザに向けて自分のログインを通知
     await wsmanager.broadCastJson({"event": "login", "player_id": ws_id}, ws_id)
+    
     try:
         while(True):
             data = await websocket.receive_text()
