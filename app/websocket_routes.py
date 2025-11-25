@@ -20,6 +20,16 @@ async def websocket_endpoint(websocket: WebSocket, ws_id: str):# ws_idは接続�
     # 接続リストへ追加
     await wsmanager.addWebSocket(websocket, ws_id)
 
+    # 🆕 接続成功時にクライアントに初回メッセージを送信
+    welcome_message = {
+        "event": "send_position",#接続クライアントの現在地を要求
+        "message": "WebSocket接続が確立されました",
+        "user_id": ws_id,
+        "server_time": json.dumps({"timestamp": "2025-01-16T10:30:00Z"}),  # 実際の時刻を使用する場合
+        "online_users_count": len(wsmanager.websockets)
+    }
+    await wsmanager.sendJson(welcome_message, ws_id, websocket)
+
     # すでにサーバに接続されているクライアントを画面に反映する
     for user_id, ws in wsmanager.websockets.items():
         if not ws_id == user_id and not ws.client_state == WebSocketState.DISCONNECTED:
