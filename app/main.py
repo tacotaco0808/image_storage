@@ -1,27 +1,17 @@
 import asyncio
-import json
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
-from datetime import timedelta
-from typing import  Optional
-import uuid
-from uuid import UUID
+from datetime import timedelta, datetime
 import asyncpg
-from asyncpg import Connection
 from asyncpg.pool import Pool
-from fastapi import  Depends, FastAPI, File, Form, Query, Request, Response,UploadFile,HTTPException, WebSocket, WebSocketDisconnect
-import cloudinary,os
-from fastapi.security import OAuth2PasswordRequestForm
-from auth import auth_user, create_access_token, get_current_user
-from database import DATABASE_URL, get_db_conn
-from enums import ImageFormat
-from schemas import DBUser, Image, Token, User
-from cloudinary.uploader import upload,destroy
+from fastapi import FastAPI, WebSocket
+import cloudinary, os
 from dotenv import load_dotenv
-from security import oauth2_scheme
-import hashlib
-import re
+from jose import jwt
+
 load_dotenv()
+
+DATABASE_URL = str(os.getenv("DATABASE_URL"))
 
 # JWTブラックリスト管理用の辞書（トークン: 有効期限）
 from datetime import datetime
@@ -118,7 +108,7 @@ app = FastAPI(lifespan=lifespan,root_path="/api")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[str(os.getenv("FRONT_IP")),"http://localhost:5173"],
-    allow_credentials=True,
+    allow_credentials=True,# JWT認証のためのクッキーを受け取る
     allow_methods=["*"],  # 全メソッド（GET, POSTなど）許可
     allow_headers=["*"],  # 全ヘッダー許可)
 )
@@ -128,212 +118,11 @@ cloudinary.config(
     api_secret = str(os.getenv("CLOUDINARY_API_SECRET"))
 )
 
-@app.get("/images")
-async def get_images(user_id: Optional[UUID] = Query(None),format: Optional[ImageFormat] = Query(None),limit: Optional[int] = Query(None),offset: Optional[int] = Query(None),conn:Connection = Depends(get_db_conn)): # Optionalが型でNone or Value Queryが入力時の話
-    # クエリパラメータから検索ワードに一致する画像データ取得
-    clauses = []
-    values=[]
-    if user_id:
-        clauses.append(f"user_id = ${len(values)+1}")
-        values.append(user_id)
-    if format:
-        clauses.append(f"format = ${len(values)+1}")
-        values.append(format)
-    
-    # WHERE句の構築
-    where_clause = ""
-    if clauses:
-        where_clause = "WHERE " + " AND ".join(clauses)
-    
-    # 総数を取得するクエリ
-    count_query = f"SELECT COUNT(*) FROM images {where_clause}"
-    total_count = await conn.fetchval(count_query, *values)
-    
-    # データを取得するクエリ
-    query = f"SELECT * FROM images {where_clause} ORDER BY created_at DESC"
-    
-    if limit is not None:
-        query += f" LIMIT ${len(values)+1}"
-        values.append(limit)
-    
-    if offset is not None:
-        query += f" OFFSET ${len(values)+1}"
-        values.append(offset)
-
-    rows = await conn.fetch(query,*values)
-    images = [dict(row) for row in rows]
-    
-    # 総数と画像データを返す
-    return {
-        "images": images,
-        "total": total_count,
-        "count": len(images)
-    }
-
-@app.get("/images/{image_id}")  # response_modelを削除
-async def get_image_by_id(image_id: UUID, conn: Connection = Depends(get_db_conn)):
-    """特定の画像のメタデータを取得"""
-    db_res = await conn.fetchrow("SELECT * FROM images WHERE public_id = $1", image_id)
-    if db_res is None:
-        raise HTTPException(status_code=404, detail="Image not found")
-    
-    image_dict = dict(db_res)
-    
-    # Cloudinaryの画像URLを生成
-    cloudinary_url = f"https://res.cloudinary.com/{os.getenv('CLOUDINARY_CLOUD_NAME')}/image/upload/v{image_dict['version']}/{image_dict['public_id']}.{image_dict['format']}"
-    
-    return {
-        **image_dict,
-        "image_url": cloudinary_url
-    }
-
-@app.post("/images")
-async def create_image(title:str = Form(...),description:str = Form(...),image_file:UploadFile=File(...),conn:Connection=Depends(get_db_conn),current_user:DBUser = Depends(get_current_user)):
-    # formリクエストを受けとって、cloudinaryにpubidをハッシュ化した画像をストア
-    public_id = uuid.uuid4() # ストアする画像のUUID生成
-    upload_contents = await image_file.read()
-    user_id = current_user.user_id
-    try:
-        # cloudinary操作
-        
-        upload_res = upload(upload_contents,resource_type="auto",public_id=str(public_id),overwrite=False) # I/Oだけど公式sdkが非同期対応していないそのうち自作する
-        version = upload_res["version"]
-        image_url =  upload_res["secure_url"]
-        format = upload_res["format"]
-        # db操作
-
-        await conn.execute(
-            "INSERT INTO images (public_id, user_id, format, title, description, version) VALUES ($1, $2, $3, $4, $5, $6)",
-            public_id, user_id, format, title, description, version
-        )
-        
-        # レスポンス
-        schema:Image =Image(public_id=public_id,user_id=user_id,title=title,description=description,format=format,version=version)
-        return {"image_url":image_url,"image":schema}
-    
-    except Exception as e:
-        destroy(public_id=str(public_id)) # トランザクション中DBでエラーが発生した場合のロールバック
-        raise HTTPException(status_code=500,detail=f"Database error: {e}")
-    
-@app.delete("/images/{image_id}")
-async def delete_image(image_id:UUID,conn:Connection = Depends(get_db_conn),current_user:DBUser = Depends(get_current_user)):
-    
-    # database 操作
-    row = await conn.fetchrow("SELECT * FROM images WHERE public_id = $1",image_id)
-    if row is None:
-        raise HTTPException(status_code=404,detail="Image not found")
-    
-    dict_row = dict(row)
-    if dict_row["user_id"] != current_user.user_id:
-        raise HTTPException(
-            status_code=403,
-            detail="You do not have permission to perform this action"
-        )
-    
-    res = await conn.execute("DELETE FROM images WHERE public_id = $1",image_id)
-    if res == "DELETE 0":
-        raise HTTPException(status_code=404,detail="Image not found in database")
-    
-    # cloudinary操作
-    destroy_res = destroy(str(image_id))
-    if destroy_res.get("result") != "ok":
-        raise HTTPException(status_code=500, detail="Failed to delete image from Cloudinary")
-    
-    return {"detail":"Image deleted successfully"}
-
-@app.post("/users")
-async def create_user(name:str = Form(...),login_id:str=Form(...),password:str = Form(...),conn:Connection = Depends(get_db_conn)):
-    user_id = uuid.uuid4() # ユーザのUUIDを作成
-    hashed_password = hashlib.sha256(password.encode()).hexdigest()
-    if not re.fullmatch(r"^[a-zA-Z0-9_]+$",login_id): # login_id は半角英数字のみに限定
-        raise HTTPException(status_code=400,detail="login_id must contain only half-width letters, numbers, and underscores")
-    try:
-        res = await conn.execute("INSERT INTO users (user_id,name,login_id,password) VALUES ($1,$2,$3,$4)",user_id,name,login_id,hashed_password)
-    except asyncpg.UniqueViolationError:
-        raise HTTPException(status_code=409,detail="This login_id is already in use")
-
-    return {"user_id":user_id,"name":name,"login_id":login_id,"message":"User created successfully"}
-
-@app.get("/users")
-async def get_users(conn:Connection = Depends(get_db_conn)):
-    rows = await conn.fetch("SELECT * FROM users")
-    users = [] 
-    for row in rows: # password省く
-        user_dict = dict(row)
-        user_dict.pop("password",None)
-        users.append(user_dict)
-    
-    return users
-
-@app.get("/users/{user_uuid}")
-async def get_user(user_uuid:UUID,conn:Connection = Depends(get_db_conn)):
-    user_id = str(user_uuid)
-    row = await conn.fetchrow("SELECT * FROM users WHERE user_id = $1",user_id)
-    if row is None:
-        raise HTTPException(status_code=404,detail="User not found")
-    user_dict = dict(row)
-    user_dict.pop("password")
-    return user_dict
-
-@app.delete("/users/{user_uuid}")
-async def delete_user(user_uuid:UUID,conn:Connection = Depends(get_db_conn)):
-    user_id = str(user_uuid)
-    res = await conn.execute("DELETE FROM users WHERE user_id = $1",user_id)
-    command,count = res.split(" ")
-    if int(count) == 0:
-        raise HTTPException(status_code=404,detail="User not found")
-    
-    return {"message": "User deleted successfully"}
-
-@app.post("/login")
-async def login_for_access_token(res:Response,form_data:OAuth2PasswordRequestForm = Depends(),conn:Connection=Depends(get_db_conn)):
-    # ログイン後トークンの作成
-    user= await auth_user(login_id=form_data.username,password=form_data.password,conn=conn)
-    if not user:
-        raise HTTPException(status_code=401,detail="Incorrect username or password",headers={"WWW-Authenticate": "Bearer"})
-    minutes = float(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES") or 30)
-    access_token_expires = timedelta(minutes=minutes)
-    access_token = create_access_token(
-        data={"sub": user.login_id}, expires_delta=access_token_expires
-    )
-    token = Token(access_token=access_token,token_type="bearer")
-    res.set_cookie(key="access_token",
-        value=token.access_token,
-        httponly=True,
-        secure=True,  # 本番では True (HTTPS)
-        max_age=1800,
-        samesite="none",
-        path="/")
-    return {"message":"Login successful"}
-
-@app.post("/logout")  
-async def logout_user(request: Request, response: Response):
-    """ログアウト処理 - JWTトークンをブラックリストに追加"""
-    token = request.cookies.get("access_token")
-    
-    if token:
-        # JWTをブラックリストに追加（有効期限付き）
-        add_token_to_blacklist(token)
-        print(f"トークンをブラックリストに追加: {token[:20]}...")
-        
-        # 期限切れトークンのクリーンアップ
-        cleanup_expired_tokens()
-    
-    # クッキーをクリア
-    response.delete_cookie(
-        key="access_token",
-        path="/",
-        samesite="none",
-        secure=True
-    )
-    
-    return {"message": "ログアウトしました"}
-
-@app.get("/me")
-async def get_me(current_user:DBUser = Depends(get_current_user)):
-    dict_current_user = current_user.model_dump()
-    dict_current_user.pop("hashed_password",None)
-    return dict_current_user
+# ルーターを登録
+from routers import images, users, auth as auth_router
+app.include_router(images.router)
+app.include_router(users.router)
+app.include_router(auth_router.router)
 
 # WebSocket関連の処理は websocket_routes.py に移動
 from websocket_routes import websocket_endpoint
