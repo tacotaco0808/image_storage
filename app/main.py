@@ -1,5 +1,4 @@
 import asyncio
-import json
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from datetime import timedelta
@@ -118,7 +117,7 @@ app = FastAPI(lifespan=lifespan,root_path="/api")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[str(os.getenv("FRONT_IP")),"http://localhost:5173"],
-    allow_credentials=True,
+    allow_credentials=True,# JWT認証のためのクッキーを受け取る
     allow_methods=["*"],  # 全メソッド（GET, POSTなど）許可
     allow_headers=["*"],  # 全ヘッダー許可)
 )
