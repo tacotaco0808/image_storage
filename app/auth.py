@@ -25,7 +25,7 @@ async def auth_user(login_id:str,password:str,conn:Connection):
         return False
     
     
-    user:User = User(user_id=row["user_id"],login_id=row["login_id"],user_name=row["name"])
+    user:User = User(user_id=row["user_id"],login_id=row["login_id"],name=row["name"])
     return user
 
 def create_access_token(data:dict ,expires_delta:Union[timedelta,None]=None):
@@ -57,6 +57,11 @@ async def get_current_user(request:Request,conn: Connection = Depends(get_db_con
     if not token:
         raise credentials_exception
     
+    # ブラックリストチェック
+    from main import is_token_blacklisted
+    if is_token_blacklisted(token):
+        raise credentials_exception
+    
     # 環境変数の取得とチェック
     SECRET_KEY = os.getenv("SECRET_KEY")
     ALGORITHM = os.getenv("ALGORITHM")   
@@ -85,6 +90,11 @@ async def get_current_user_ws(websocket:WebSocket,app ):
         headers={"WWW-Authenticate": "Bearer"},
     )
     if not token:
+        return
+    
+    # ブラックリストチェック
+    from main import is_token_blacklisted
+    if is_token_blacklisted(token):
         return
     
     # 環境変数の取得とチェック

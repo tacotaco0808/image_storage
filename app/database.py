@@ -18,5 +18,5 @@ async def get_user_from_db(username:str,conn:Connection):
     if row is None:
         raise HTTPException(status_code=404,detail="User is not found")
     dict_row = dict(row)
-    user:DBUser = DBUser(user_id=dict_row["user_id"],login_id=dict_row["login_id"],user_name=dict_row["name"],created_at=dict_row["created_at"],hashed_password=dict_row["password"])
+    user:DBUser = DBUser(user_id=dict_row["user_id"],login_id=dict_row["login_id"],name=dict_row["name"],created_at=dict_row["created_at"],hashed_password=dict_row["password"])
     return user

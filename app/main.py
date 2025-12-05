@@ -9,25 +9,67 @@ from uuid import UUID
 import asyncpg
 from asyncpg import Connection
 from asyncpg.pool import Pool
-from fastapi import  Depends, FastAPI, File, Form, Query, Response,UploadFile,HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import  Depends, FastAPI, File, Form, Query, Request, Response,UploadFile,HTTPException, WebSocket, WebSocketDisconnect
 import cloudinary,os
 from fastapi.security import OAuth2PasswordRequestForm
-from fastapi.websockets import WebSocketState
-from auth import auth_user, create_access_token, get_current_user,get_current_user_ws
+from auth import auth_user, create_access_token, get_current_user
 from database import DATABASE_URL, get_db_conn
 from enums import ImageFormat
-from eventHandler import EventHandler
 from schemas import DBUser, Image, Token, User
 from cloudinary.uploader import upload,destroy
 from dotenv import load_dotenv
 from security import oauth2_scheme
 import hashlib
 import re
-
-from websocket import ConnectionManager
 load_dotenv()
 
+# JWTブラックリスト管理用の辞書（トークン: 有効期限）
+from datetime import datetime
+import os
+from jose import jwt
+blacklisted_tokens = {}
 
+def add_token_to_blacklist(token: str):
+    """トークンをブラックリストに追加（有効期限付き）"""
+    try:
+        SECRET_KEY = os.getenv("SECRET_KEY")
+        ALGORITHM = os.getenv("ALGORITHM")
+        if SECRET_KEY and ALGORITHM:
+            payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+            exp_timestamp = payload.get("exp")
+            if exp_timestamp:
+                exp_datetime = datetime.fromtimestamp(exp_timestamp)
+                blacklisted_tokens[token] = exp_datetime
+    except Exception:
+        # デコードに失敗した場合は、現在時刻から1時間後を設定
+        blacklisted_tokens[token] = datetime.now() + timedelta(hours=1)
+
+def cleanup_expired_tokens():
+    """期限切れのトークンをブラックリストから削除"""
+    now = datetime.now()
+    expired_tokens = [token for token, exp_time in blacklisted_tokens.items() if now > exp_time]
+    for token in expired_tokens:
+        blacklisted_tokens.pop(token, None)
+    if expired_tokens:
+        print(f"期限切れトークン {len(expired_tokens)} 個を削除しました")
+
+def is_token_blacklisted(token: str) -> bool:
+    """トークンがブラックリストに含まれているかチェック"""
+    if token in blacklisted_tokens:
+        # 期限をチェック
+        exp_time = blacklisted_tokens[token]
+        if datetime.now() > exp_time:
+            # 期限切れなので削除
+            blacklisted_tokens.pop(token, None)
+            return False
+        return True
+    return False
+
+async def periodic_token_cleanup():
+    """定期的にブラックリストの期限切れトークンをクリーンアップ"""
+    while True:
+        await asyncio.sleep(3600)  # 1時間ごとに実行
+        cleanup_expired_tokens()
 
 # 初期化（最初に一度だけ呼ぶ）
 @asynccontextmanager
@@ -37,6 +79,10 @@ async def lifespan(app: FastAPI):
     app.state.db_pool = db_pool # fastapiのstateへ保持|poolはSQLへの接続を管理するオブジェクト
 
     print("✅ Connected to database")
+    
+    # ブラックリストクリーンアップタスクを開始
+    cleanup_task = asyncio.create_task(periodic_token_cleanup())
+    print("✅ Started token cleanup task")
     # テーブル作成を起動時に実行（1回だけ）
     async with app.state.db_pool.acquire() as conn: # acquireで１つ接続を借りて使い、async withが終わると自動で返却
         await conn.execute("""
@@ -63,6 +109,7 @@ async def lifespan(app: FastAPI):
         """)
     yield
     # 後処理
+    cleanup_task.cancel()
     await app.state.db_pool.close()
     print("🛑 Disconnected from database")
 
@@ -82,7 +129,7 @@ cloudinary.config(
 )
 
 @app.get("/images")
-async def get_images(user_id: Optional[UUID] = Query(None),format: Optional[ImageFormat] = Query(None),conn:Connection = Depends(get_db_conn)): # Optionalが型でNone or Value Queryが入力時の話
+async def get_images(user_id: Optional[UUID] = Query(None),format: Optional[ImageFormat] = Query(None),limit: Optional[int] = Query(None),offset: Optional[int] = Query(None),conn:Connection = Depends(get_db_conn)): # Optionalが型でNone or Value Queryが入力時の話
     # クエリパラメータから検索ワードに一致する画像データ取得
     clauses = []
     values=[]
@@ -92,22 +139,53 @@ async def get_images(user_id: Optional[UUID] = Query(None),format: Optional[Imag
     if format:
         clauses.append(f"format = ${len(values)+1}")
         values.append(format)
+    
+    # WHERE句の構築
+    where_clause = ""
     if clauses:
-        query = "SELECT * FROM images WHERE "+ " AND ".join(clauses)
-        # " AND ".join(clauses) clausesの中身をANDでつないで文字列に変換する
-    else:
-        query = "SELECT * FROM images"
+        where_clause = "WHERE " + " AND ".join(clauses)
+    
+    # 総数を取得するクエリ
+    count_query = f"SELECT COUNT(*) FROM images {where_clause}"
+    total_count = await conn.fetchval(count_query, *values)
+    
+    # データを取得するクエリ
+    query = f"SELECT * FROM images {where_clause} ORDER BY created_at DESC"
+    
+    if limit is not None:
+        query += f" LIMIT ${len(values)+1}"
+        values.append(limit)
+    
+    if offset is not None:
+        query += f" OFFSET ${len(values)+1}"
+        values.append(offset)
 
     rows = await conn.fetch(query,*values)
-    return [dict(row) for row in rows]
+    images = [dict(row) for row in rows]
+    
+    # 総数と画像データを返す
+    return {
+        "images": images,
+        "total": total_count,
+        "count": len(images)
+    }
 
-@app.get("/image",response_model=Image)
-async def get_image(public_id:UUID,conn:Connection = Depends(get_db_conn)):
-    db_res = await conn.fetchrow("SELECT * FROM images WHERE public_id = $1",public_id)
+@app.get("/images/{image_id}")  # response_modelを削除
+async def get_image_by_id(image_id: UUID, conn: Connection = Depends(get_db_conn)):
+    """特定の画像のメタデータを取得"""
+    db_res = await conn.fetchrow("SELECT * FROM images WHERE public_id = $1", image_id)
     if db_res is None:
-        raise HTTPException(status_code=404,detail="Image not found")
-    return dict(db_res)
-
+        raise HTTPException(status_code=404, detail="Image not found")
+    
+    image_dict = dict(db_res)
+    
+    # Cloudinaryの画像URLを生成
+    cloudinary_url = f"https://res.cloudinary.com/{os.getenv('CLOUDINARY_CLOUD_NAME')}/image/upload/v{image_dict['version']}/{image_dict['public_id']}.{image_dict['format']}"
+    
+    return {
+        **image_dict,
+        "image_url": cloudinary_url
+    }
 
 @app.post("/images")
 async def create_image(title:str = Form(...),description:str = Form(...),image_file:UploadFile=File(...),conn:Connection=Depends(get_db_conn),current_user:DBUser = Depends(get_current_user)):
@@ -228,72 +306,38 @@ async def login_for_access_token(res:Response,form_data:OAuth2PasswordRequestFor
         path="/")
     return {"message":"Login successful"}
 
+@app.post("/logout")  
+async def logout_user(request: Request, response: Response):
+    """ログアウト処理 - JWTトークンをブラックリストに追加"""
+    token = request.cookies.get("access_token")
+    
+    if token:
+        # JWTをブラックリストに追加（有効期限付き）
+        add_token_to_blacklist(token)
+        print(f"トークンをブラックリストに追加: {token[:20]}...")
+        
+        # 期限切れトークンのクリーンアップ
+        cleanup_expired_tokens()
+    
+    # クッキーをクリア
+    response.delete_cookie(
+        key="access_token",
+        path="/",
+        samesite="none",
+        secure=True
+    )
+    
+    return {"message": "ログアウトしました"}
+
 @app.get("/me")
 async def get_me(current_user:DBUser = Depends(get_current_user)):
     dict_current_user = current_user.model_dump()
     dict_current_user.pop("hashed_password",None)
     return dict_current_user
 
-wsmanager = ConnectionManager()
+# WebSocket関連の処理は websocket_routes.py に移動
+from websocket_routes import websocket_endpoint
 
 @app.websocket("/ws/{ws_id}")
-async def websocket_endpoint(websocket:WebSocket,ws_id:str):
-    # ws_idは接続してきたクライアントのID
-    current_user = await get_current_user_ws(websocket,websocket.app)
-    if not current_user:
-        await websocket.close(code=4003, reason="Unauthorized")
-        print(f"認証がありません")
-        return 
-    else:
-        print(f"認証されています")
-        print(f"currentuser:{current_user}")
-
- 
-
-    await wsmanager.addWebSocket(websocket,ws_id)
-    # if not coccection_accepted:
-    #     return 
-    
-    
-    # すでにサーバに接続されているクライアントを今接続してきたクライアントの画面に反映する
-    for user_id,ws in wsmanager.websockets.items():
-        if not ws_id == user_id and not ws.client_state == WebSocketState.DISCONNECTED:
-            await wsmanager.sendJson({"event":"login","player_id":user_id},ws_id,websocket)
-            def message():
-                text = ""
-                for id,ws in wsmanager.websockets.items():
-                    text += f"ウェブソケット:{id}:{ws.client_state}\n"
-                return text
-            # await wsmanager.sendMessage(websocket,f"{message()}")
-    
-    await wsmanager.broadCastJson({"event":"login","player_id":ws_id},ws_id)
-    eventHandler = EventHandler(wsmanager)
-    try:
-        while(True):
-            data = await websocket.receive_text()
-            try:
-                event = json.loads(data)
-                print(f"From Client:{event}",flush=True)
-                await eventHandler.handle(event=event,websocket=websocket,user_id=ws_id)
-
-            except Exception as e:
-                print(f"{e}")
-            # await wsmanager.sendMessage(websocket,data)
-            # await wsmanager.broadCastMessage(f"hello:{ws_id}")
-            # await wsmanager.broadCastJson(event_type="position",user_id="aiueo",x=100,y=100)
-            # 全部jsonで扱って、イベントの先頭で区別したほうがよさそう。"message","position"
-    except WebSocketDisconnect:
-        await wsmanager.broadCastJson({"event":"logout","player_id":ws_id},ws_id)
-        await wsmanager.deleteWebSocket(websocket,ws_id)
-    except RuntimeError:
-        await wsmanager.broadCastJson({"event":"logout","player_id":ws_id},ws_id)
-        await wsmanager.deleteWebSocket(websocket,ws_id)
-    except Exception as e:
-        await wsmanager.broadCastJson({"event":"logout","player_id":ws_id},ws_id)
-        await wsmanager.deleteWebSocket(websocket,ws_id)
-        
-    # await websocket.accept()
-    # while(True):
-    #     data = await websocket.receive_text()
-    #     print(f"From Client:{data}")
-    #     await websocket.send_text(f"From Server:{data}")
+async def websocket_route(websocket: WebSocket, ws_id: str):
+    await websocket_endpoint(websocket,ws_id)
